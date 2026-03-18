@@ -1,6 +1,6 @@
 ## Calculadora Estatística Profissional (Streamlit)
 
-Aplicação web em Python para análise estatística descritiva, desenvolvida para a disciplina de **Estatística Aplicada (FATEC)**.
+Aplicação web para análise estatística descritiva, desenvolvida para a disciplina de **Estatística Aplicada (FATEC)**.
 
 ### Funcionalidades
 
