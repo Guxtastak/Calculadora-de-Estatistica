@@ -38,26 +38,5 @@ Aplicação web em Python para análise estatística descritiva, desenvolvida pa
 - `app.py` – interface web em **Streamlit**, chamando as funções de `calculos.py`.
 - `requirements.txt` – dependências do projeto.
 
-### Como executar
 
-1. Crie e ative um ambiente virtual (opcional, mas recomendado):
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-2. Instale as dependências:
-
-```bash
-pip install -r requirements.txt
-```
-
-3. Execute a aplicação Streamlit:
-
-```bash
-streamlit run app.py
-```
-
-4. O navegador abrirá automaticamente em `http://localhost:8501` com a calculadora.
 
