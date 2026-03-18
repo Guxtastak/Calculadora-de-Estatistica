@@ -1,0 +1,531 @@
+// =========================
+// Utilitários (JS puro)
+// =========================
+
+function fmt(num, dec) {
+  if (typeof num !== "number" || !isFinite(num)) return String(num);
+  return num.toFixed(dec);
+}
+
+function parseNumeros(texto) {
+  if (!texto || texto.trim() === "") throw new Error("Nenhum dado foi informado.");
+  const bruto = texto.replace(/,/g, " ");
+  const partes = bruto.split(/\s+/).map(s => s.trim()).filter(Boolean);
+  if (partes.length === 0) throw new Error("Nenhum número válido foi encontrado na entrada.");
+
+  const valores = partes.map(p => {
+    const v = Number(p.replace(",", "."));
+    if (!Number.isFinite(v)) throw new Error(`Valor inválido encontrado: '${p}'. Use apenas números.`);
+    return v;
+  });
+
+  if (valores.length < 2) throw new Error("Informe pelo menos dois valores para análise estatística.");
+  return valores;
+}
+
+function rol(valores) {
+  return [...valores].sort((a, b) => a - b);
+}
+
+function media(valores) {
+  return valores.reduce((acc, v) => acc + v, 0) / valores.length;
+}
+
+function medianaNaoAgrupada(valoresOrdenados) {
+  const n = valoresOrdenados.length;
+  const mid = Math.floor(n / 2);
+  if (n % 2 === 1) return valoresOrdenados[mid];
+  return (valoresOrdenados[mid - 1] + valoresOrdenados[mid]) / 2;
+}
+
+function modaInfo(valores) {
+  const map = new Map();
+  for (const v of valores) map.set(v, (map.get(v) || 0) + 1);
+  let maxF = 0;
+  for (const f of map.values()) maxF = Math.max(maxF, f);
+  if (maxF === 1) return { tipo: "amodal", modas: [], maxFreq: 1 };
+  const modas = [...map.entries()].filter(([, f]) => f === maxF).map(([v]) => v).sort((a, b) => a - b);
+  return { tipo: modas.length === 1 ? "unimodal" : "multimodal", modas, maxFreq: maxF };
+}
+
+// Aula II: k
+function calcularK(n, metodo) {
+  if (metodo === "sqrt") return Math.max(1, Math.ceil(Math.sqrt(n)));
+  // Sturges: k = 1 + 3,3*log10(n)
+  const k = 1 + 3.3 * (Math.log(n) / Math.log(10));
+  return Math.max(1, Math.ceil(k));
+}
+
+// Aula II: h = AT/k, com opção ceil
+function calcularH(AT, k, arred) {
+  if (k <= 0) throw new Error("k deve ser maior que zero.");
+  let h = AT / k;
+  if (!isFinite(h) || h <= 0) throw new Error("h inválido.");
+  if (arred === "ceil") h = Math.ceil(h);
+  return h;
+}
+
+// Tabela simples (discreta)
+function tabelaFrequenciaSimples(valores) {
+  const n = valores.length;
+  const map = new Map();
+  for (const v of valores) map.set(v, (map.get(v) || 0) + 1);
+  const xs = [...map.keys()].sort((a, b) => a - b);
+  let Fi = 0;
+  return xs.map(xi => {
+    const fi = map.get(xi);
+    const fr = (fi / n) * 100;
+    Fi += fi;
+    const Fr = (Fi / n) * 100;
+    return { xi, fi, fr, Fi, Fr };
+  });
+}
+
+// Tabela com classes (contínua) baseada em h e k
+// Classes no formato [li, ls) (última inclui o máximo por ajuste numérico)
+function tabelaFrequenciaClasses(valores, metodoK, arredH) {
+  const n = valores.length;
+  const vmin = Math.min(...valores);
+  const vmax = Math.max(...valores);
+  const AT = vmax - vmin;
+  if (AT === 0) throw new Error("Todos os valores são idênticos; não é possível criar classes.");
+
+  const k = calcularK(n, metodoK);
+  const h = calcularH(AT, k, arredH);
+
+  // limites: vmin + i*h
+  const limites = Array.from({ length: k + 1 }, (_, i) => vmin + i * h);
+  // garantir inclusão do máximo
+  if (limites[limites.length - 1] < vmax) limites[limites.length - 1] = vmax;
+  limites[limites.length - 1] = limites[limites.length - 1] + 1e-9;
+
+  const classes = [];
+  for (let i = 0; i < k; i++) {
+    const li = limites[i];
+    const ls = limites[i + 1];
+    classes.push({
+      classe: `[${li.toFixed(2)}, ${ls.toFixed(2)})`,
+      li,
+      ls,
+      xi: (li + ls) / 2, // Aula: (LimiteInferior + LimiteSuperior)/2
+      fi: 0,
+    });
+  }
+
+  // Contagem fi
+  for (const v of valores) {
+    // encontra classe [li, ls)
+    let idx = Math.floor((v - vmin) / h);
+    if (idx < 0) idx = 0;
+    if (idx >= classes.length) idx = classes.length - 1;
+    // correção por borda
+    while (idx > 0 && v < classes[idx].li) idx--;
+    while (idx < classes.length - 1 && v >= classes[idx].ls) idx++;
+    classes[idx].fi += 1;
+  }
+
+  // fr, Fi, Fr, somatórios
+  let Fi = 0;
+  for (const c of classes) {
+    c.fr = (c.fi / n) * 100;
+    Fi += c.fi;
+    c.Fi = Fi;
+    c.Fr = (Fi / n) * 100;
+    c.fix = c.fi * c.xi;
+    c.fix2 = c.fi * (c.xi ** 2);
+  }
+
+  const sumFi = classes.reduce((s, c) => s + c.fi, 0);
+  const sumFix = classes.reduce((s, c) => s + c.fix, 0);
+  const sumFix2 = classes.reduce((s, c) => s + c.fix2, 0);
+
+  return { classes, AT, k, h, vmin, vmax, limites, sumFi, sumFix, sumFix2 };
+}
+
+// Aula IV: Variância e DP (amostral n-1 ou populacional n) usando somatórios
+function varianciaEDesvioAgrupado(sumFix2, n, mediaAgr, tipo) {
+  // Fórmula base: Var = (Σ fi * xi² / n) − (Média²)
+  const base = sumFix2 / n - mediaAgr ** 2;
+  const factor = tipo === "populacional" ? 1 : n / (n - 1);
+  const variancia = base * factor;
+  return { variancia, desvio: Math.sqrt(variancia) };
+}
+
+// Aula IV: Mediana para dados agrupados
+// Me = li + [ ((n/2) - Fant) / fme ] * h
+function medianaAgrupada(classes, n, h) {
+  const pos = n / 2;
+  const idx = classes.findIndex(c => c.Fi >= pos);
+  if (idx < 0) throw new Error("Não foi possível localizar a classe mediana (Fi >= n/2).");
+  const c = classes[idx];
+  const li = c.li;
+  const fme = c.fi;
+  if (fme === 0) throw new Error("A classe da mediana tem fi=0; verifique os intervalos.");
+  const Fant = idx > 0 ? classes[idx - 1].Fi : 0;
+  const Me = li + (((pos - Fant) / fme) * h);
+  return { Me, li, Fant, fme, h, pos, classe: c.classe, idx };
+}
+
+// =========================
+// Render (HTML)
+// =========================
+function renderTable(container, columns, rows, formatters = {}, footer) {
+  if (!rows || rows.length === 0) {
+    container.innerHTML = "<div class='hint'>Sem dados para exibir.</div>";
+    return;
+  }
+  const thead = `<thead><tr>${columns.map(c => `<th>${c}</th>`).join("")}</tr></thead>`;
+  const tbody = rows
+    .map(r => {
+      const tds = columns.map(c => {
+        const key = c;
+        const v = r[key];
+        const f = formatters[key];
+        return `<td>${f ? f(v, r) : v}</td>`;
+      }).join("");
+      return `<tr>${tds}</tr>`;
+    })
+    .join("");
+  let tfoot = "";
+  if (footer) {
+    const cells = columns
+      .map(c => {
+        const v = footer[c];
+        const f = formatters[c];
+        return `<td>${v != null ? (f ? f(v, footer) : v) : ""}</td>`;
+      })
+      .join("");
+    tfoot = `<tfoot><tr>${cells}</tr></tfoot>`;
+  }
+  container.innerHTML = `<table>${thead}<tbody>${tbody}</tbody>${tfoot}</table>`;
+}
+
+function setError(msg) {
+  const el = document.getElementById("erro");
+  if (!msg) {
+    el.style.display = "none";
+    el.textContent = "";
+    return;
+  }
+  el.style.display = "block";
+  el.textContent = msg;
+}
+
+function renderKPIs(ctx) {
+  const el = document.getElementById("kpis");
+  const dec = ctx.dec;
+  const rolTxt = ctx.rol.map(v => fmt(v, dec)).join(", ");
+  const modaTxt =
+    ctx.moda.tipo === "amodal"
+      ? "Amodal"
+      : `${ctx.moda.tipo}: ${ctx.moda.modas.map(v => fmt(v, dec)).join(", ")}`;
+
+  const mediaLabel = ctx.mediaAgr != null ? "Média agrupada (Σfi·xi / n)" : "Média (x̄)";
+  const mediaVal = ctx.mediaAgr != null ? ctx.mediaAgr : ctx.xbar;
+
+  el.innerHTML = `
+    <div class="kpi">
+      <div class="title">ROL e n</div>
+      <div class="val"><b>n</b> = ${ctx.n}<br /><b>ROL</b> = ${rolTxt}</div>
+    </div>
+    <div class="kpi">
+      <div class="title">MTC</div>
+      <div class="val">
+        <b>${mediaLabel}</b> = ${fmt(mediaVal, dec)}<br />
+        <b>Mediana</b> = ${fmt(ctx.mediana, dec)}<br />
+        <b>Moda</b> = ${modaTxt}
+      </div>
+    </div>
+    <div class="kpi">
+      <div class="title">MD</div>
+      <div class="val">
+        <b>AT</b> = ${fmt(ctx.AT, dec)}<br />
+        <b>Variância (${ctx.tipoVar === "populacional" ? "σ²" : "s²"})</b> = ${fmt(ctx.variancia, dec)}<br />
+        <b>Desvio (${ctx.tipoVar === "populacional" ? "σ" : "s"})</b> = ${fmt(ctx.desvio, dec)}
+      </div>
+    </div>
+  `;
+}
+
+// =========================
+// Charts (Chart.js)
+// =========================
+let chartHist = null;
+let chartPizza = null;
+
+function buildHist(ctx) {
+  const canvas = document.getElementById("hist");
+  const labels = ctx.classes.map(c => c.classe);
+  const data = ctx.classes.map(c => c.fi);
+
+  if (chartHist) chartHist.destroy();
+  chartHist = new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Frequência (fi)",
+          data,
+          backgroundColor: "rgba(34, 197, 94, 0.75)",
+          borderColor: "rgba(34, 197, 94, 1)",
+          borderWidth: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { labels: { color: "#e5e7eb" } },
+        tooltip: { enabled: true },
+      },
+      scales: {
+        x: { ticks: { color: "#e5e7eb" }, grid: { color: "rgba(31,41,55,0.7)" } },
+        y: { ticks: { color: "#e5e7eb" }, grid: { color: "rgba(31,41,55,0.7)" }, beginAtZero: true },
+      },
+    },
+  });
+}
+
+function buildPizza(ctx) {
+  const canvas = document.getElementById("pizza");
+  const labels = ctx.freqSimples.map(r => fmt(r.xi, ctx.dec));
+  const data = ctx.freqSimples.map(r => r.fi);
+
+  if (chartPizza) chartPizza.destroy();
+  chartPizza = new Chart(canvas, {
+    type: "pie",
+    data: {
+      labels,
+      datasets: [
+        {
+          data,
+          backgroundColor: [
+            "rgba(34, 197, 94, 0.85)",
+            "rgba(14, 165, 233, 0.85)",
+            "rgba(251, 191, 36, 0.85)",
+            "rgba(248, 113, 113, 0.85)",
+            "rgba(167, 139, 250, 0.85)",
+            "rgba(45, 212, 191, 0.85)",
+            "rgba(251, 113, 133, 0.85)",
+          ],
+          borderColor: "#020617",
+          borderWidth: 2,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { labels: { color: "#e5e7eb" } },
+      },
+    },
+  });
+}
+
+// =========================
+// Controlador principal
+// =========================
+function analyze() {
+  setError("");
+  const dados = document.getElementById("dados").value;
+  const metodoK = document.getElementById("metodoK").value;
+  const arredH = document.getElementById("arredH").value;
+  const tipoVar = document.getElementById("tipoVar").value;
+  const dec = Math.max(0, Math.min(6, Number(document.getElementById("decimais").value || 2)));
+
+  let valores;
+  try {
+    valores = parseNumeros(dados);
+  } catch (e) {
+    setError(e.message);
+    clearOutputs();
+    return;
+  }
+
+  const n = valores.length;
+  const vrol = rol(valores);
+  const med = medianaNaoAgrupada(vrol);
+  const moda = modaInfo(valores);
+
+  const vmin = vrol[0];
+  const vmax = vrol[vrol.length - 1];
+  const AT = vmax - vmin;
+
+  const freqSimples = tabelaFrequenciaSimples(valores);
+  let classesPkg = null;
+  let medAgr = null;
+  let mediaAgr = null;
+  let varAgr = null;
+  let desvioAgr = null;
+
+  try {
+    classesPkg = tabelaFrequenciaClasses(valores, metodoK, arredH);
+    medAgr = medianaAgrupada(classesPkg.classes, n, classesPkg.h);
+    // Média agrupada: (Σ fi * xi) / n
+    mediaAgr = classesPkg.sumFix / n;
+    const vd = varianciaEDesvioAgrupado(classesPkg.sumFix2, n, mediaAgr, tipoVar);
+    varAgr = vd.variancia;
+    desvioAgr = vd.desvio;
+  } catch (e) {
+    // Se não der para construir classes (ex: AT=0), mostramos aviso em vez de quebrar tudo.
+    classesPkg = null;
+    medAgr = null;
+    setError(e.message);
+  }
+
+  const ctx = {
+    dec, n, rol: vrol, mediana: med, moda,
+    vmin, vmax, AT,
+    tipoVar,
+    variancia: varAgr != null ? varAgr : 0,
+    desvio: desvioAgr != null ? desvioAgr : 0,
+    xbar: mediaAgr != null ? mediaAgr : media(valores),
+    mediaAgr,
+    freqSimples,
+    classes: classesPkg ? classesPkg.classes : [],
+    classesPkg,
+    medAgr,
+  };
+
+  renderKPIs(ctx);
+
+  // Tabela simples
+  const tblS = document.getElementById("tblSimples");
+  renderTable(
+    tblS,
+    ["xi", "fi", "fr_%", "Fi", "Fr_%"],
+    freqSimples.map(r => ({
+      "xi": r.xi,
+      "fi": r.fi,
+      "fr_%": r.fr,
+      "Fi": r.Fi,
+      "Fr_%": r.Fr,
+    })),
+    {
+      "xi": v => fmt(v, dec),
+      "fr_%": v => fmt(v, 2),
+      "Fr_%": v => fmt(v, 2),
+    }
+  );
+
+  // Tabela classes
+  const tblC = document.getElementById("tblClasses");
+  const infoC = document.getElementById("infoClasses");
+  const medEl = document.getElementById("medianaAgr");
+  const memoEl = document.getElementById("memoCalc");
+
+  if (classesPkg) {
+    renderTable(
+      tblC,
+      ["classe", "li", "ls", "xi", "fi", "fr_%", "Fi", "Fr_%", "fix", "fix2"],
+      classesPkg.classes.map(c => ({
+        "classe": c.classe,
+        "li": c.li,
+        "ls": c.ls,
+        "xi": c.xi,
+        "fi": c.fi,
+        "fr_%": c.fr,
+        "Fi": c.Fi,
+        "Fr_%": c.Fr,
+        "fix": c.fix,
+        "fix2": c.fix2,
+      })),
+      {
+        "li": v => fmt(v, dec),
+        "ls": v => fmt(v, dec),
+        "xi": v => fmt(v, dec),
+        "fr_%": v => fmt(v, 2),
+        "Fr_%": v => fmt(v, 2),
+        "fix": v => fmt(v, dec),
+        "fix2": v => fmt(v, dec),
+      },
+      {
+        "classe": "Total",
+        "li": null,
+        "ls": null,
+        "xi": null,
+        "fi": classesPkg.sumFi,
+        "fr_%": 100,
+        "Fi": classesPkg.sumFi,
+        "Fr_%": 100,
+        "fix": classesPkg.sumFix,
+        "fix2": classesPkg.sumFix2,
+      }
+    );
+
+    infoC.textContent = `AT = ${fmt(classesPkg.AT, dec)} · k = ${classesPkg.k} · h = ${fmt(classesPkg.h, dec)} (${arredH === "ceil" ? "ceil aplicado" : "decimais"})`;
+
+    memoEl.innerHTML = `
+      <div class="mono" style="margin-top:8px;"><b>Memória de Cálculo (Dados Agrupados)</b></div>
+      <div>n = Σfi = <b>${classesPkg.sumFi}</b></div>
+      <div>Σfi·xi = <b>${fmt(classesPkg.sumFix, dec)}</b></div>
+      <div>Σfi·xi² = <b>${fmt(classesPkg.sumFix2, dec)}</b></div>
+      <div>Média agrupada: x̄<sub>agr</sub> = Σfi·xi / n = ${fmt(classesPkg.sumFix, dec)} / ${classesPkg.sumFi} = <b>${fmt(mediaAgr, dec)}</b></div>
+      <div>Variância (${tipoVar === "populacional" ? "populacional" : "amostral"}) usando somatórios:</div>
+      <div>Var = (Σfi·xi² / n) − (x̄<sub>agr</sub>)² ${tipoVar === "amostral" ? "ajustada por n/(n-1)" : ""}</div>
+    `;
+
+    if (medAgr) {
+      medEl.innerHTML = `
+        <div class="mono" style="margin-bottom:6px;"><b>Mediana (dados agrupados) – Aula IV</b></div>
+        <div>Classe da mediana: <b>${medAgr.classe}</b> (Fi ≥ n/2 = ${fmt(medAgr.pos, dec)})</div>
+        <div>Fórmula: <b>Me = li + [((n/2) − Fant) / fme] · h</b></div>
+        <div>Substituindo: Me = ${fmt(medAgr.li, dec)} + (((${fmt(medAgr.pos, dec)} − ${medAgr.Fant}) / ${medAgr.fme}) · ${fmt(medAgr.h, dec)})</div>
+        <div>Resultado: <b>Me ≈ ${fmt(medAgr.Me, dec)}</b></div>
+      `;
+    } else {
+      medEl.textContent = "";
+    }
+
+    buildHist(ctx);
+  } else {
+    tblC.innerHTML = "<div class='hint'>Não foi possível gerar classes para este conjunto.</div>";
+    infoC.textContent = "";
+    medEl.textContent = "";
+    memoEl.textContent = "";
+    if (chartHist) { chartHist.destroy(); chartHist = null; }
+  }
+
+  // Pizza sempre (frequência simples)
+  buildPizza(ctx);
+}
+
+function clearOutputs() {
+  document.getElementById("kpis").innerHTML = "";
+  document.getElementById("tblSimples").innerHTML = "";
+  document.getElementById("tblClasses").innerHTML = "";
+  document.getElementById("infoClasses").textContent = "";
+  document.getElementById("medianaAgr").textContent = "";
+  document.getElementById("memoCalc").textContent = "";
+  if (chartHist) { chartHist.destroy(); chartHist = null; }
+  if (chartPizza) { chartPizza.destroy(); chartPizza = null; }
+}
+
+// =========================
+// Eventos (tempo real / botão)
+// =========================
+let t = null;
+function scheduleAnalyze() {
+  const modo = document.getElementById("tempoReal").value;
+  if (modo !== "on") return;
+  if (t) clearTimeout(t);
+  t = setTimeout(analyze, 250);
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("analisar").addEventListener("click", analyze);
+  document.getElementById("limpar").addEventListener("click", () => {
+    document.getElementById("dados").value = "";
+    setError("");
+    clearOutputs();
+  });
+
+  document.getElementById("dados").addEventListener("input", scheduleAnalyze);
+  for (const id of ["metodoK", "arredH", "tipoVar", "decimais", "tempoReal"]) {
+    document.getElementById(id).addEventListener("change", () => {
+      if (document.getElementById("tempoReal").value === "on") analyze();
+    });
+  }
+});
+
